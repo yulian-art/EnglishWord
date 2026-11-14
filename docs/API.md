@@ -1,140 +1,86 @@
-# API 规范（字段速查）
+# API 规范（后端已实现）
 
-基础地址：`http://127.0.0.1:8080/api`。字段使用 camelCase，数据库使用 snake_case。integer 是整数，string[] 是字符串数组。
+基础地址：`http://127.0.0.1:8080/api`。JSON 字段使用 camelCase，数据库使用 snake_case。成功均返回 200，业务错误统一为 `{"error":"说明"}`；框架产生的 413、路由不存在等错误不保证使用该格式。所有控制器响应均包含 `Cache-Control: no-store`。
 
-有请求体时设置 `Content-Type: application/json`。浏览器自动携带 Cookie，curl 需要保存 Cookie。前端不传 userId、标准答案、分数，由后端识别身份、判题和计分。
+## 请求与身份
 
-当前请求体上限 64 KiB，超过时由框架拒绝。
+写请求（POST、PATCH、DELETE）必须设置 `Content-Type: application/json`。除 DELETE 可无请求体外，有体请求均使用 JSON 对象。浏览器使用同源 Cookie；客户端不传 userId、正确答案、分数或打卡日期，后端不信任这些值。请求体上限 64 KiB。
 
-## 1. 已实现的 8 个接口
+登录和退出会轮换 `JSESSIONID`，轮换前的 Cookie 立即失效；切换账号或退出同时清除临时学习任务。会话闲置一小时或重启后需要重新登录。服务拒绝跨站写请求、非同源 Origin 及简单表单；为兼容当前 Vite 的 `changeOrigin` 代理，本机目标额外信任 `http://127.0.0.1:5173` 和 `http://localhost:5173`，其他开发端口默认不放行。不启用跨域 CORS，也不将身份放入可由前端修改的请求字段。
 
-请求示例中的字段均必传；GET 无请求体。当前成功状态均为 200。
+需要登录的接口未登录返回 401；无权访问其他用户的词库或修改公共示例返回 403；资源不存在返回 404；重名或状态冲突返回 409；字段错误返回 400；数据库等内部故障返回 500，不公开 SQL 详情。匿名用户只能浏览公共词库并进行不持久化的示例学习，不能创建词库或访问历史、错题和打卡。匿名读取私人词库同样返回 403。
 
-| 方法 / 路径（省略 /api） | 传什么 | 返回什么 | 主要业务错误 |
-| --- | --- | --- | --- |
-| GET /health | 无 | `{"status":"ok","mode":"demo","framework":"Drogon"}`，三项均为 string | 内部异常 500 |
-| GET /wordbooks | 无 | `{"items": Wordbook[]}` | 内部异常 500 |
-| GET /wordbooks/{id}/words | 路径 id: integer，词库编号 | `{"items": Word[]}` | 词库不存在或为空 404 |
-| GET /study | 无，靠 Cookie 找当前任务 | StudyState | 无任务 404 |
-| POST /study/start | `{"wordbookId":1,"mode":"spelling"}` | StudyState，替换当前任务，分数归零 | 空词库、无效模式或字段 400 |
-| POST /study/answer | `{"answer":"apple"}`，answer: string | StudyState，额外含 result: AnswerResult | 空白或字段错误 400，无任务 404，轮次已结束 409 |
-| POST /study/next | `{}`，无业务字段 | StudyState，移动到下一题 | 无任务 404，当前题未答对或已结束 409 |
-| POST /study/review | `{}`，无业务字段 | 新一轮 StudyState，只含上一轮错词，采用拼写模式 | 无错词 400，无任务 404，上一轮未结束 409 |
+## 账号与词库
 
-start.wordbookId 是 integer；start.mode 是 string，只允许 choice（看中文选英文）和 spelling（看中文拼写）。选择题至少需要两个不同单词，最多四个选项。不存在的词库在 start 中也按空词库返回 400。
-
-### Wordbook：词库
-
-| 字段 | 类型 | 含义 / 例子 |
+| 方法 / 路径（省略 /api） | 请求 | 成功返回 |
 | --- | --- | --- |
-| id | integer | 词库编号，例如 1 |
-| name | string | 词库名称，例如“入门示例词库” |
-| wordCount | integer | 不重复单词数，例如 10 |
-| isDemo | boolean | 是否公共示例，目前恒为 true |
-
-### Word：预览用单词
-
-| 字段 | 类型 | 含义 / 例子 |
-| --- | --- | --- |
-| id | integer | 单词编号，例如 2 |
-| english | string | 英文，例如 "book" |
-| partOfSpeech | string | 词性，例如 "n." |
-| meanings | string[] | 多条释义，例如 ["书", "书籍"] |
-
-### StudyState：背诵接口共用的返回结构
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| mode | string | choice / spelling |
-| score | integer | 本轮分数，允许负数 |
-| correctCount | integer | 首次答对题数，重试答对不计入 |
-| totalCount | integer | 本轮总题数 |
-| currentIndex | integer | 当前题下标，从 0 开始，结束时等于 totalCount |
-| wrongCount | integer | 本轮首次答错的单词数，纠正后仍保留供轮末复习 |
-| finished | boolean | 本轮是否全部完成 |
-| canAdvance | boolean | 当前题是否已答对，决定“下一题”能否点击 |
-| question | Question / null | 当前题目，结束后为 null |
-| result | AnswerResult，可省略 | **只有 answer 接口成功响应包含**；GET /study 不返回历史反馈 |
-
-Question 的字段：
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| wordId | integer | 当前题对应的单词编号 |
-| partOfSpeech | string | 词性，例如 "n." |
-| meanings | string[] | 提示中文，例如 ["苹果"] |
-| choices | string[] | 选择题选项，提交选项文本作为 answer；拼写题为 [] |
-
-题目不含独立的标准英文答案字段。选择题选项顺序可能随响应改变，前端不能提交选项序号。
-
-AnswerResult 的字段：
-
-| 字段 | 类型 | 含义 |
-| --- | --- | --- |
-| correct | boolean | **本次**输入是否正确 |
-| firstAttempt | boolean | 是否当前题首次提交有效答案 |
-| scoreDelta | integer | 首次对 +10、首次错 -10、即时重试 0 |
-| message | string | 反馈文字，错误时带首字母提示 |
-
-### 一个完整返回例子
-
-POST /study/answer，请求 `{"answer":"aple"}`，首次答错：
-
-```json
-{
-  "mode": "spelling",
-  "score": -10,
-  "correctCount": 0,
-  "totalCount": 10,
-  "currentIndex": 0,
-  "wrongCount": 1,
-  "finished": false,
-  "canAdvance": false,
-  "question": {"wordId": 1, "partOfSpeech": "n.", "meanings": ["苹果"], "choices": []},
-  "result": {"correct": false, "firstAttempt": true, "scoreDelta": -10, "message": "回答错误，请重试。首字母提示：a"}
-}
-```
-
-再提交 `{"answer":"apple"}`：correct=true、firstAttempt=false、scoreDelta=0、score=-10、canAdvance=true，此时才调用 next。空白输入返回 400，不占用首次作答机会。
-
-业务错误格式：`{"error":"请先正确回答当前题目。"}`，error: string。400 表示参数错误，404 表示资源或任务不存在，409 表示操作顺序不对，500 表示内部错误。未注册路由等框架错误不保证采用此 JSON 格式。
-
-## 2. 待开发接口草案（不能用于当前联调）
-
-下表约定未来字段。示例值说明类型，? 表示可选。其余字段必传；路径 id 是整数；私有接口从登录 Cookie 识别用户。
-
-| 方法 / 路径（省略 /api） | 请求字段 / 示例 | 成功返回字段 / 示例 |
-| --- | --- | --- |
-| POST /auth/register | `{"username":"xiaoming","password":"example-password"}` | `{"user":{"id":1,"username":"xiaoming","createdAt":"2026-11-09T10:00:00Z"}}` |
-| POST /auth/login | 同注册请求 | 同上，响应头另设置登录 Cookie，不返回 Token |
-| POST /auth/logout | `{}` | `{"success":true}` |
-| GET /auth/me | 无 | `{"user": User}`，User 字段同注册返回 |
-| POST /wordbooks | `{"name":"四级词库"}` | `{"id":2,"name":"四级词库","wordCount":0,"isDemo":false}` |
+| GET /health | 无 | `{"status":"ok","mode":"demo","framework":"Drogon"}` |
+| POST /auth/register | `{"username":"xiaoming","password":"example-password"}` | `{"user":User}`；注册不自动登录 |
+| POST /auth/login | 同注册 | `{"user":User}`，设置新登录 Cookie |
+| POST /auth/logout | `{}` 或 `{"checkin":true}` | `{"success":true}`；打卡退出另含 `checkin:Checkin` |
+| GET /auth/me | 无 | `{"user":User}` |
+| GET /wordbooks | 无 | `{"items":Wordbook[]}`，公共加本人私人词库 |
+| POST /wordbooks | `{"name":"四级词库"}` | 新建的 Wordbook |
+| GET /wordbooks/{id}/words | 词库编号 | `{"items":Word[]}`，空词库为 [] |
+| POST /wordbooks/{id}/words | `{"english":"book","partOfSpeech":"n.","meanings":["书"]}` | 新建的 Word |
+| PATCH /words/{id} | english、partOfSpeech 至少一个字符串字段 | 更新后的 Word |
+| DELETE /words/{id} | 无业务字段 | `{"success":true}` |
+| POST /words/{id}/meanings | `{"meaning":"书籍"}` | 补充后的 Word，重复释义不新增 |
 | POST /wordbooks/{id}/import | `{"content":"english\tpos\tmeaning\napple\tn.\t苹果","duplicatePolicy":"merge"}` | `{"importedCount":1,"mergedCount":0,"skippedCount":0}` |
-| POST /wordbooks/{id}/words | `{"english":"book","partOfSpeech":"n.","meanings":["书"]}` | Word |
-| PATCH /words/{id} | english?: string、partOfSpeech?: string，至少一个，例如 `{"partOfSpeech":"n./v."}` | 更新后的 Word |
-| DELETE /words/{id} | 无 | `{"success":true}` |
-| POST /words/{id}/meanings | `{"meaning":"书籍"}`，meaning: string | 补充后的 Word |
-| GET /wrong-words | `?mastered=false`，可选 boolean，不传查全部 | `{"items":[{"word":Word,"wrongCount":2,"mastered":false,"updatedAt":"2026-11-09T10:00:00Z"}]}` |
-| GET /statistics | 无 | `{"totalScore":80,"sessionCount":1,"firstAttemptCount":10,"correctCount":9,"accuracy":0.9,"passThreshold":0.8,"passed":true}` |
-| POST /checkins | `{}`，日期由服务器生成 | `{"date":"2026-11-09","alreadyCheckedIn":false,"totalDays":1}` |
-| GET /checkins | 无 | `{"dates":["2026-11-09"],"totalDays":1}` |
 
-补充约定：
+User 为 `{id,username,createdAt}`，从不包含密码哈希。用户名是 3～32 位 ASCII 字母、数字或下划线；密码为 8～128 字节，不能包含 NUL。User.createdAt 及其他时间戳为 UTC ISO 8601 字符串，例如 `2026-11-14T10:00:00Z`。
 
-- 注册/登录的 username、password 均为 string；User.createdAt、updatedAt 是 UTC 时间字符串。密码不出现在响应中。
-- 导入 content 为 UTF-8 TSV 字符串，duplicatePolicy 为 merge（同词合并新释义）或 skip（跳过同词）。三个 Count 均为 integer。有非法行整批回滚，返回 400：`{"error":"导入失败","errors":[{"line":2,"message":"缺少中文释义"}]}`。
-- Word.meanings 至少一条非空释义；重复补充同一释义不新增记录。同一词库的英文忽略 ASCII 大小写去重。
-- statistics 中分数、次数是 integer，accuracy、passThreshold 为 0～1 的 number，passed 为 boolean；无有效作答时 accuracy=0、passed=false。示例的 80 分与 90% 正确率不矛盾：九对一错为 9×10−10=80。
-- checkin.date、dates[] 为 YYYY-MM-DD string，totalDays: integer。按 Asia/Shanghai 取当天；重复提交返回 alreadyCheckedIn=true，totalDays 不增加。
-- 私有接口未登录返回 401，无权访问其他用户对象返回 403，用户名重复返回 409。过关阈值 80% 是待老师确认的约定。
+Wordbook 为 `{id,name,wordCount,isDemo}`。Word 为 `{id,english,partOfSpeech,meanings}`，meanings 为字符串数组。词库名 1～50 个 Unicode 字符；英文 1～100 个 Unicode 字符且至少包含一个 ASCII 英文字母；词性 0～50 个字符；每条释义 1～500 个字符，每个词最多 50 条不同释义。文本去除两端 ASCII 空白，拒绝非法 UTF-8、NUL 和内部控制字符。同词库英文忽略 ASCII 大小写去重，冲突返回 409；公共词库只读。
 
-## 3. 调用与答辩
+## TSV 导入
 
-顺序：wordbooks → words（预览）→ study/start → study/answer → study/next → … → study/review。
+content 是 UTF-8 TSV 字符串，不是文件上传；支持 UTF-8 BOM、LF 和 CRLF。表头必须为 `english<TAB>pos<TAB>meaning`，每条数据行恰好三列；pos 可为空，英文和释义不能为空。空白行不导入但计入物理行号。content 最多 48 KiB，最多 2000 行。
 
-“为什么不在前端算分？”——前端只传 answer，后端检查当前题和首次作答状态，避免修改网页或重复提交刷分。
+duplicatePolicy 仅允许 merge 或 skip。merge 为同词补充新释义，或填充原本为空的词性，不覆盖非空词性；skip 保留已有词。计数按数据行而非最终词数：新词行计 importedCount，同词且新增信息计 mergedCount，跳过或无新增信息计 skippedCount。同一批多行同词可登记多条释义。
 
-“为什么刷新后还能继续？”——Cookie 标识当前浏览器，Drogon 会话保存本轮状态，刷新后 GET /study 恢复。**闲置一小时或后端重启会清空，当前还不是历史成绩持久化。**
+格式和字段错误整批拒绝，返回 400：`{"error":"导入失败","errors":[{"line":3,"message":"释义长度必须为 1..500 个 Unicode 字符。"}]}`。line 是包含表头、空行的实际输入行号。校验及数据库写入任一失败均不保留部分导入；只有事务确认提交成功才返回成功。SQL/COMMIT 故障返回 500。
 
-更多例子见 [BUSINESS.md](BUSINESS.md)，数据库对应关系见 [DATABASE.md](DATABASE.md)，启动见 [LOCAL.md](LOCAL.md)。
+## 背诵接口
+
+| 方法 / 路径 | 请求 | 返回或规则 |
+| --- | --- | --- |
+| GET /study | 无 | 当前 Cookie、当前身份的 StudyState；无任务 404 |
+| POST /study/start | `{"wordbookId":1,"mode":"spelling"}` | 新一轮 StudyState，替换临时任务；旧轮次历史保留 |
+| POST /study/answer | `{"answer":"apple"}` | StudyState，另含 result:AnswerResult |
+| POST /study/next | `{}` | 当前题答对才前进，完成最后一题时结算 |
+| POST /study/review | `{}` | 上轮结束后用其仍存在的错词开始独立拼写轮次 |
+| POST /wrong-words/review | `{"wordbookId":2}` | 登录后从所选词库长期未掌握错题开始拼写轮次，不依赖上轮内存 |
+
+mode 为 choice（看中文选英文）、spelling（看中文拼写）或 meaning（看英文写任一登记中文释义）。choice 至少需要两个不同词，最多四个选项。空词库、无错词或非法模式为 400；未答对就 next、未结束就本轮 review 为 409。答案不能是空白、非法 UTF-8 或控制字符，最多 2000 字节；无效输入不消耗首次作答机会。
+
+StudyState 为 `{sessionId,wordbookId,mode,score,correctCount,totalCount,currentIndex,wrongCount,finished,canAdvance,accuracy,passThreshold,passed,question}`。编号和计数为整数；匿名 sessionId 为 null；currentIndex 从 0 开始，完成时等于 totalCount。correctCount 仅计首次答对，wrongCount 是本轮首次答错词数，纠正后仍保留；accuracy 为 correctCount/totalCount。只有完成全部题目且正确率达到本轮阈值，passed 才为 true。
+
+question 在完成后为 null，否则含 `{wordId,partOfSpeech,meanings,choices}`。meaning 模式另含 english:string 且 meanings=[]；其余模式不返回 english。choice 的 choices 是英文文本数组，提交选项文本而非下标；其他模式 choices=[]。题目不暴露独立标准答案字段。
+
+AnswerResult 为 `{correct,firstAttempt,scoreDelta,message}`。首次正确 +10、首次错误 −10、允许负分，即时重试 0 分；同题必须答对才能前进。correct 是本次是否正确；首次错、随后纠正不会增加 correctCount，也不移出本轮错词集合。英文匹配忽略 ASCII 大小写和两端空白，中文匹配任一登记释义，不做语义或模糊匹配。非 meaning 模式答错时提供首字母提示。GET /study 不返回上一次 result。
+
+## 历史、长期错题、统计和打卡
+
+| 方法 / 路径 | 请求 | 成功返回 |
+| --- | --- | --- |
+| GET /history | 无 | `{"items":HistoryEntry[]}`，本人最近 100 轮，含未完成轮次 |
+| GET /statistics | 无 | Statistics，统计本人全部轮次，不受历史 100 条限制 |
+| GET /wrong-words | 可选 `?mastered=true` 或 `?mastered=false` | `{"items":[{"word":Word,"wrongCount":2,"mastered":false,"updatedAt":"2026-11-14T10:00:00Z"}]}` |
+| POST /checkins | `{}` | `{"date":"2026-11-14","alreadyCheckedIn":false,"totalDays":1}` |
+| GET /checkins | 无 | `{"dates":["2026-11-14"],"totalDays":1}`，日期从新到旧 |
+
+HistoryEntry 为 `{id,wordbookId,wordbookName,mode,score,totalCount,correctCount,firstAttemptCount,accuracy,passThreshold,passed,finished,startedAt,finishedAt}`。未完成的 finishedAt 为 null；词库删除后 wordbookId 为 null，但保留名称快照和成绩。每轮阈值在开始时写入数据库，不随配置改变；历史正确率分母为该轮 totalCount。
+
+Statistics 为 `{totalScore,sessionCount,completedSessionCount,firstAttemptCount,correctCount,accuracy,passThreshold,passed}`。sessionCount 包括全部已开始轮次，completedSessionCount 仅计完成轮次；totalScore 包含未完成轮次已提交的分数。累计 accuracy=首次答对数/有效首次作答数，重试不参与分母；没有有效首答时 accuracy=0、passed=false。
+
+wrongCount 是该用户累计首次答错的轮次数，每轮同词最多增加一次。即时重试正确不标记 mastered；后续独立轮次首次答对才标记已掌握，再次首次答错则恢复未掌握。不传 mastered 时返回全部，非法筛选值返回 400。查询和复习始终重新检查当前词库权限；删除词条会清除该词长期错题，但保留历史分数和提交输入，已删词编号不会复用。
+
+Checkin.date 和 dates[] 按 Asia/Shanghai（UTC+8）取服务器当天，不接受客户端指定日期；同一用户同一天多次或多浏览器同时提交只记一天。无需开始学习也可打卡。logout 的 checkin=true 在打卡提交成功后才退出；失败会保留登录状态方便重试。
+
+默认过关阈值是待教师确认的 80%，启动时可用 `--pass-threshold 0.8` 配置，合法范围为 0～1。实现已完成，但不代表教师已确认规则。
+
+## 持久化与验证边界
+
+登录用户的每次有效作答、汇总分数及错题更新同事务提交；数据库失败不推进内存学习状态。重启后能重新登录并读取词库、历史、长期错题和打卡，但不恢复未完成轮次的具体题目位置；匿名示例学习不保存个人历史。v1 数据库自动升级到 v2，原历史保留，运行时无需读取 SQL 或示例文件。
+
+后端测试命令为 `cmake --build --preset dev --parallel 2` 和 `ctest --preset dev`，Windows 多配置环境加 `--config Debug` / `-C Debug`。当前包含 study_engine、database、auth、progress、api_integration 五项。前端页面是否接齐所有新增接口、前端合并冲突和新电脑演示不属于本次后端验证结论。

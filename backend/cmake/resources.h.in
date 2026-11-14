@@ -3,6 +3,8 @@
 namespace englishword::resources {
 /// 构建时嵌入迁移脚本，运行时不依赖工作目录。
 inline constexpr const char* schema = R"EW_SCHEMA(@ENGLISHWORD_SCHEMA@)EW_SCHEMA";
+/// 版本 2：学习记录、首次作答唯一性和历史阈值快照。
+inline constexpr const char* progressSchema = R"EW_PROGRESS(@ENGLISHWORD_PROGRESS_SCHEMA@)EW_PROGRESS";
 /// 构建时嵌入只读示例词库。
 inline constexpr const char* demoTsv = R"EW_TSV(@ENGLISHWORD_DEMO_TSV@)EW_TSV";
 }

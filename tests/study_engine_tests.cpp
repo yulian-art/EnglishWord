@@ -72,6 +72,32 @@ int main()
         require(std::find(options.begin(), options.end(), "apple") != options.end(), "选项含正确答案");
         require(study.score() == 0 && study.wrongWords().empty(), "重开一轮重置状态");
 
+//11/11/16:59新增用例
+        study.start(sampleWords(), StudyMode::Meaning);
+
+        const auto meaningCorrect = study.submit("苹果");
+        require(
+            meaningCorrect.correct && meaningCorrect.scoreDelta == 10,
+            "输入正确中文释义应加十分");
+
+        study.start({sampleWords()[1]}, StudyMode::Meaning);
+        const auto secondMeaning = study.submit("书籍");
+        require(secondMeaning.correct, "应匹配任意一条已登记释义");
+
+        study.start(sampleWords(), StudyMode::Meaning);
+        const auto wrongMeaning = study.submit("错误答案");
+        require(
+            !wrongMeaning.correct && wrongMeaning.scoreDelta == -10,
+            "中文答错扣十分");
+
+        const auto retryMeaning = study.submit("苹果");
+        require(
+            retryMeaning.correct && !retryMeaning.firstAttempt && retryMeaning.scoreDelta == 0,
+            "中文重试答对不重复计分");
+
+
+
+
         study.start({sampleWords().front()}, StudyMode::Spelling);
         study.submit("apple");
         require(!study.advance() && study.finished(), "最后一题后结束");

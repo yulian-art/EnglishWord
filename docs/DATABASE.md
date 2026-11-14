@@ -1,60 +1,50 @@
 # 数据库速查
 
-SQLite 文件默认在 `build/runtime/englishword.sqlite`。所有字段已在 [001_init.sql](../backend/db/migrations/001_init.sql) 标注中文注释。本次只加注释，没有修改表结构，不用删除已有数据库。
+SQLite 默认文件为 `build/runtime/englishword.sqlite`，可用 `--database` 指定。启动时在事务内运行内嵌迁移，版本由 `PRAGMA user_version` 管理；已有 v1 数据自动升级到 v2，不需要删除数据库。运行时不依赖项目工作目录中的 SQL 或 TSV 文件。
 
-## 八张表分别做什么
+## 八张表与当前用途
 
-| 表 | 中文含义 | 核心字段 / 业务用途 | 当前状态 |
-| --- | --- | --- | --- |
-| users | 用户 | id 用户编号、username 用户名、password_hash 密码验证串、created_at 注册时间 | 结构已建，注册待开发 |
-| wordbooks | 词库 | id 词库编号、owner_user_id 所属用户、name 词库名称、created_at 创建时间 | 公共示例已使用 |
-| words | 单词 | id 单词编号、wordbook_id 所属词库、english 英文、part_of_speech 词性 | 已使用 |
-| word_meanings | 多条释义 | id 释义编号、word_id 所属单词、meaning 一条中文解释 | 已使用 |
-| study_sessions | 每轮成绩汇总 | id 轮次编号、user_id 用户、wordbook_id 词库、mode 模式、score 分数、total_count 总题数、correct_count 首次对题数、started_at / finished_at 起止时间 | 写入待开发 |
-| answer_records | 每次提交明细 | id 提交编号、session_id 所属轮次、word_id 单词、submitted_answer 输入、is_correct 是否答对、is_first_attempt 是否首次、score_delta 分数变化、created_at 提交时间 | 写入待开发 |
-| wrong_words | 用户长期错题本 | user_id 用户、word_id 单词、wrong_count 首次答错轮次数、mastered 是否掌握、updated_at 更新时间 | 写入待开发 |
-| checkins | 打卡 | user_id 用户、checkin_date 业务日期、created_at 实际提交时间 | 写入待开发 |
+| 表 | 职责 | 关键关系与约束 |
+| --- | --- | --- |
+| users | 注册、登录账号 | username 唯一，只保存 password_hash，created_at 为 UTC |
+| wordbooks | 公共或用户私人词库 | owner_user_id 为 NULL 表示公共只读，否则属于指定用户 |
+| words | 单词及词性 | wordbook_id 外键；同词库 english 按 ASCII NOCASE 唯一；id 为 AUTOINCREMENT，不复用删除编号 |
+| word_meanings | 一个单词的多条释义 | word_id 外键；(word_id,meaning) 唯一 |
+| study_sessions | 每轮成绩与开始/完成状态 | user_id、可空 wordbook_id、wordbook_name 快照、mode、score、total_count、correct_count、pass_threshold、started_at、finished_at |
+| answer_records | 每次有效提交及即时重试 | session_id、可空 word_id、question_index、submitted_answer、is_correct、is_first_attempt、score_delta、created_at |
+| wrong_words | 用户长期错题与掌握状态 | (user_id,word_id) 联合主键；wrong_count、mastered、updated_at |
+| checkins | 按上海日期的用户打卡 | (user_id,checkin_date) 联合主键，保证同日幂等 |
 
-## 表之间的关系
+上述八张表均已接入后端。词库、释义、学习成绩、错题与打卡不是前端模拟数据；每次查询和写入均从登录会话识别用户，私人数据需验证所属关系。
 
-```mermaid
-erDiagram
-    users ||--o{ wordbooks : "拥有（公共示例无所属用户）"
-    wordbooks ||--o{ words : "包含"
-    words ||--o{ word_meanings : "具有"
-    users ||--o{ study_sessions : "参加"
-    wordbooks o|--o{ study_sessions : "来源"
-    study_sessions ||--o{ answer_records : "记录提交"
-    words o|--o{ answer_records : "被作答"
-    users ||--o{ wrong_words : "拥有错题"
-    words ||--o{ wrong_words : "被记录"
-    users ||--o{ checkins : "打卡"
-```
+## 迁移与事务
 
-## 五个答辩重点
+`001_init.sql` 保持原结构不变。新增 `002_progress.sql` 兼容旧版只允许 choice/spelling 的轮次约束，保留历史后支持 meaning；同时增加题号、阈值快照、词库名称快照，以及不复用的单词编号。迁移在外键开启的事务内按子表到父表顺序替换，保留多释义、作答、错题和打卡记录，最终检查由测试覆盖。
 
-1. **主键标识一条记录**：不能靠展示名称关联记录，用 users.id 等编号关联。
-2. **外键关联对象**：words.wordbook_id 指向 wordbooks.id，不能给不存在的词库添加单词。
-3. **联合唯一约束防重复**：words 的 `(wordbook_id, english)` 保证同一本词库不重复收录 apple；word_meanings 的 `(word_id, meaning)` 防重复释义。
-4. **联合主键防止重复打卡累计**：checkins 的 `(user_id, checkin_date)` 不能重复；累计天数查该用户记录数，不用每点一次就加一。
-5. **分开保存汇总和明细**：study_sessions 保存“本轮 80 分”，answer_records 解释“九题首次正确、一题首次错误”；wrong_words 保存跨轮次复习状态。
+`answer_records` 的部分唯一索引限制同一轮同一 question_index 最多一条首次提交。旧记录没有可靠题号，迁移后题号为 NULL，不猜测或删除历史。Drogon 事务析构仅发起异步提交，因此仓储等待 COMMIT 结果，确认提交成功才向调用方返回。
 
-## API 字段如何对应数据库
+TSV 整批导入、单词及多释义创建、一次作答的明细/成绩/错题更新、完成结算和打卡均有事务保护。输入错误、SQL 中途失败和 COMMIT 阶段失败均有回滚测试。所有仓储连接启用 `foreign_keys=ON`（涉及关联写入的连接）及忙等待；删除单词级联删除释义和长期错题，历史明细 word_id 置 NULL，保留提交输入及分数。删除词库后轮次 wordbook_id 置 NULL，保留名称快照。
 
-| API 字段 | 数据库字段 / 计算方式 |
+## API 字段与计算方式
+
+| API 字段 | 来源或规则 |
 | --- | --- |
-| Wordbook.id、start.wordbookId | wordbooks.id；单词关联字段为 words.wordbook_id |
-| Word.id、Question.wordId | words.id |
-| partOfSpeech | words.part_of_speech |
-| meanings[] | 查 word_meanings 的多行 meaning，组装为数组 |
-| Wordbook.wordCount | 对该词库 words 计数，不重复保存一份数量 |
-| StudyState.score、correctCount、totalCount | 当前来自内存引擎；未来保存到 study_sessions 对应字段 |
-| result.firstAttempt、scoreDelta、correct | 当前来自判题结果；未来保存到 answer_records 的 is_first_attempt、score_delta、is_correct |
-| StudyState.wrongCount | 当前内存中的本轮错词数，**不等于** wrong_words.wrong_count 的跨轮次次数 |
-| checkin.date、totalDays（草案） | checkins.checkin_date；按用户 COUNT(*) |
+| Wordbook.wordCount | 对该词库 words 计数，不另存冗余数量 |
+| Word.meanings | word_meanings 按记录组合 |
+| StudyState.score / correctCount | 纯 C++ 引擎判定，登录用户同步保存到 study_sessions |
+| firstAttempt / scoreDelta / correct | answer_records 的 is_first_attempt / score_delta / is_correct |
+| HistoryEntry.accuracy | 本轮 correct_count / total_count |
+| Statistics.accuracy | 全部轮次有效首次正确数 / 全部有效首次作答数，不计重试 |
+| wrongCount（本轮） | 内存引擎本轮首次答错的不同词数 |
+| wrongCount（长期） | wrong_words.wrong_count，累计首次答错的轮次数 |
+| Checkin.date / totalDays | 上海当天 YYYY-MM-DD / 该用户打卡记录数 |
 
-数据库布尔值用 0/1，API 用 false/true。CURRENT_TIMESTAMP 按 UTC 存储；打卡日期计划按 Asia/Shanghai 计算，不能直接把 UTC 日期当作本地打卡日期。
+每题首次正确 +10、首次错误 −10，重试为零。即时纠错不标记长期掌握；之后独立轮次首次正确才设 mastered=1，重新首次答错则置回 0。查询错题时还会重新验证词库访问权限，旧题快照不能给后来新建的词增加错题。
 
-删除用户会级联删除其私人数据；删除词库会删除其中单词，但轮次的 wordbook_id 置 NULL，保留成绩。删除单词后明细的 word_id 也置 NULL，因此能保留成绩与输入，**不能完整还原已删除题目的原文**；将来需要历史试卷回放时，应在新迁移中增加题目快照字段。
+数据库布尔值为 0/1，API 为 false/true；时间戳以 UTC 保存并以 ISO 8601 输出。打卡业务日期单独按 UTC+8 计算，不把 UTC 日期或客户端日期当作当天。过关阈值在每轮开始时保存，默认 0.8，可用 `--pass-threshold` 调整，最终规则仍待教师确认。
 
-数据库 study_sessions 是“一轮学习记录”，Drogon Session 是“浏览器临时会话”，两者不是同一个概念。数据库虽已建表，当前学习成绩尚未写入这些表。
+## 持久化边界与验证
+
+数据库 study_sessions 是学习轮次，不是浏览器 Cookie 会话。登录用户每次有效作答即持久化，重启后重新登录可查询历史、长期错题、词库和打卡；未完成轮次显示 finished=false，不恢复内存中的题目位置。匿名示例任务不写个人学习历史。历史接口仅返回最近 100 轮，统计仍覆盖全部轮次。
+
+`database_tests` 覆盖迁移、词库权限、CRUD、多释义、导入及删除级联；`progress_tests` 覆盖历史、重复首答、掌握状态、打卡、迁移兼容和提交失败；`api_integration.py` 启动真实服务验证隔离、并发及同库重启。完整测试运行方式见 [API.md](API.md) 和 [README](../README.md)。

@@ -3,6 +3,7 @@
 
 #include <drogon/drogon.h>
 
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -16,11 +17,12 @@ int main(int argc, char* argv[])
         std::string host = "127.0.0.1"; // 默认只监听本机。
         std::string webRoot; // 可选的 React 生产构建目录。
         int port = 8080; // 默认 API 端口。
+        double passThreshold = 0.8; // 暂定 80%，教师确认后可用启动参数覆盖。
         for (int index = 1; index < argc; ++index) { // 当前命令行参数索引。
             const std::string argument = argv[index]; // 当前参数名。
             if (argument == "--help") {
                 std::cout << "englishword_server [--port 8080] [--host 127.0.0.1] "
-                             "[--database path] [--web-root frontend/dist]\n";
+                             "[--database path] [--web-root frontend/dist] [--pass-threshold 0.8]\n";
                 return 0;
             }
             if (index + 1 >= argc) {
@@ -37,6 +39,13 @@ int main(int argc, char* argv[])
                 host = value;
             } else if (argument == "--database") {
                 database = value;
+            } else if (argument == "--pass-threshold") {
+                std::size_t parsed = 0;
+                passThreshold = std::stod(value, &parsed);
+                if (parsed != value.size() || !std::isfinite(passThreshold) ||
+                    passThreshold < 0.0 || passThreshold > 1.0) {
+                    throw std::invalid_argument("过关阈值必须是 0 到 1 的数值。");
+                }
             } else if (argument == "--web-root") {
                 webRoot = value;
             } else {
@@ -47,8 +56,10 @@ int main(int argc, char* argv[])
         if (!parent.empty()) {
             std::filesystem::create_directories(parent);
         }
-        englishword::WordRepository repository(database); // 持久化示例词库。
-        englishword::Api api(repository); // HTTP 路由及业务桥接。
+        englishword::WordRepository repository(database); // 迁移数据库，初始化公共词库。
+        englishword::UserRepository users(database); // 用户表读写。
+        englishword::ProgressRepository progress(database); // 持久化成绩、错题与打卡。
+        englishword::Api api(repository, users, progress, passThreshold); // HTTP 边界与业务协调。
         auto& app = drogon::app(); // Drogon 框架单例。
         app.setLogLevel(trantor::Logger::kWarn)
             .setThreadNum(2)
@@ -64,7 +75,9 @@ int main(int argc, char* argv[])
         }
         api.registerRoutes(app);
         std::cout << "EnglishWord API: http://" << host << ':' << port << "\n"
-                  << "Demo mode: accounts and study history are not implemented yet.\n" << std::flush;
+                  << "Accounts, private wordbooks, study history and check-ins enabled.\n"
+                  << "Pass threshold: " << passThreshold << " (pending teacher confirmation).\n"
+                  << std::flush;
         app.run();
     } catch (const std::exception& error) { // 启动错误写入标准错误。
         std::cerr << "启动失败：" << error.what() << '\n';

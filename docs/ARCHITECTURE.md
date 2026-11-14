@@ -7,7 +7,8 @@ Vite 开发代理，或 C++ 服务提供构建后的静态文件
   ↓ /api JSON + 同源 Cookie
 Drogon 路由 / 浏览器会话 / 请求与响应
   ↓
-纯 C++ StudyEngine + WordRepository
+纯 C++ StudyEngine + AuthService
+  ↓ WordRepository / UserRepository / ProgressRepository
   ↓ Drogon ORM 数据库客户端，参数化 SQL
 SQLite
 ```
@@ -31,25 +32,22 @@ SQLite
 3. 首次答错的词保留在本轮错词集合中，纠正后仍可在轮末复习。
 4. 错题重背创建独立一轮，分数从零开始；只有一个错词时采用拼写题。
 5. 英文匹配忽略 ASCII 大小写与两端空白，不进行模糊拼写匹配。
-6. 后续中文匹配按任一已登记释义判断，不做语义模型判题。
-7. 首次正确率 = 首次答对题数 / 本轮题数。过关阈值未实现，建议先约定为可配置 80%。
+6. 中文匹配按任一已登记释义判断，不做语义模型判题。
+7. 本轮正确率 = 首次答对题数 / 本轮题数。完成全部题目后判定过关，默认阈值 80%，可用 `--pass-threshold` 配置并保存轮次快照；最终阈值仍待老师确认。累计统计正确率的分母为实际有效首次作答数。
 
 ## 代码边界
 
-- core：题目、答案校验、计分和本轮错题，独立测试。
-- repositories：数据库和事务；当前只读公共示例，不能直接用作私人词库 API。
-- controllers：请求类型校验、调用业务、返回 JSON，不放前端展示逻辑。
-- 后续 services：账号密码验证、用户词库导入、历史成绩和打卡业务。
+core 负责题目、判题、计分和本轮错词，保持无 HTTP/数据库依赖的标准 C++。repositories 负责用户、所有权校验、词库读写与导入、学习记录和打卡事务；controllers 负责请求类型、登录身份、同源 JSON 写请求、引擎与持久化协调；services 的 AuthService 使用 OpenSSL PBKDF2 验证密码。
 
-目前控制器用互斥锁保证同会话并发提交不会重复计分，数据库同步查询也在此串行处理。课程演示规模足够，后续若要并发优化应改用 Drogon 异步数据库接口，而不是扩大同步锁范围。
+控制器用互斥锁串行业务，避免同 Cookie 并发首答重复计分；对引擎副本执行作答或前进，数据库提交成功后才替换临时状态。登录、切号和退出清除临时任务，并在身份检查前拒绝 Drogon 轮换后仍保留的旧 Cookie 别名。数据库查询在课程演示规模下使用同步接口，后续并发优化应改为异步和更细粒度的会话协调。
 
 ## 数据与迁移
 
 迁移脚本在构建时嵌入可执行文件，通过 SQLite `PRAGMA user_version` 管理版本。首次建表与示例导入位于同一个事务；再次启动不会重复导入。新增迁移应创建新编号文件并扩展迁移器，不要只修改已经发布的 001 脚本。
 
-users、wordbooks、words、word_meanings、study_sessions、answer_records、wrong_words、checkins 共八张表。公共示例的 owner_user_id 为 NULL。真实账号尚未启用。
+users、wordbooks、words、word_meanings、study_sessions、answer_records、wrong_words、checkins 共八张表均已启用。公共示例 owner_user_id 为 NULL，只读；账号只保存带随机盐的 PBKDF2 密码验证串。
 
-会话不等于用户认证。接入真实账号后：使用成熟的密码哈希库；登录时更新会话标识；私有数据查询必须从会话读取用户身份并校验所有权；给写操作加入 CSRF 校验。无需引入 JWT 才能完成本地课程项目。
+001 保持不变，新增 002 升级轮次模式、题号与首次提交唯一约束、阈值/词库名称快照及不复用的单词编号。每次有效作答的明细、汇总与错题同事务，提交失败不报告成功；重启后历史仍在，但临时题目位置不恢复。私人查询从会话识别用户并校验所有权，写接口检查 JSON、Origin 与 Fetch Metadata，兼容固定本机 Vite 开发源，无需引入 JWT。
 
 ## 注释规范
 
