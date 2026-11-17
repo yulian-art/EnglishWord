@@ -4,15 +4,13 @@ import {
   App as AntApp,
   Button,
   Card,
-  Col,
+  Dropdown,
   Empty,
   Form,
   Grid,
   Input,
   Modal,
-  Popconfirm,
   Radio,
-  Row,
   Select,
   Space,
   Table,
@@ -23,6 +21,9 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
+  EllipsisOutlined,
+  FileAddOutlined,
   LoginOutlined,
   PlusOutlined,
   ReadOutlined,
@@ -35,15 +36,10 @@ import { api, type Word } from '../lib/api';
 import { useCurrentUser } from '../lib/queries';
 import PageHeader from '../components/PageHeader';
 import { ErrorState } from '../components/PageStates';
+import WordEditorModal, { type WordEditorTarget } from '../components/WordEditorModal';
 
 interface CreateBookValues {
   name: string;
-}
-
-interface AddWordValues {
-  english: string;
-  partOfSpeech: string;
-  meanings: string;
 }
 
 interface ImportValues {
@@ -69,7 +65,7 @@ function downloadTsv(content: string, filename: string) {
 export default function WordbooksPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const screens = Grid.useBreakpoint();
   const compact = screens.md === false;
   const auth = useCurrentUser();
@@ -79,11 +75,11 @@ export default function WordbooksPage() {
   const [keyword, setKeyword] = useState('');
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
-  const [addWordOpen, setAddWordOpen] = useState(false);
+  const [editorTarget, setEditorTarget] = useState<WordEditorTarget | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
   const [createForm] = Form.useForm<CreateBookValues>();
-  const [addWordForm] = Form.useForm<AddWordValues>();
   const [importForm] = Form.useForm<ImportValues>();
 
   const books = useQuery({ queryKey: ['wordbooks'], queryFn: api.wordbooks });
@@ -125,26 +121,53 @@ export default function WordbooksPage() {
     onError: (error: Error) => message.error(error.message),
   });
 
-  const addWord = useMutation({
-    mutationFn: (word: Omit<Word, 'id'>) => api.addWord(bookId!, word),
-    onSuccess: (word) => {
-      setAddWordOpen(false);
-      message.success(`已添加 ${word.english}`);
-      void queryClient.invalidateQueries({ queryKey: ['words', bookId] });
+  const deleteWord = useMutation({
+    mutationFn: ({ word }: { word: Word; bookId: number }) => api.deleteWord(word.id),
+    onSuccess: (_result, { word, bookId: targetBookId }) => {
+      message.success(`已删除 ${word.english}`);
+      queryClient.setQueryData<{ items: Word[] }>(['words', targetBookId], (data) =>
+        data ? { items: data.items.filter((item) => item.id !== word.id) } : data,
+      );
+      void queryClient.invalidateQueries({ queryKey: ['words', targetBookId] });
       void queryClient.invalidateQueries({ queryKey: ['wordbooks'] });
     },
     onError: (error: Error) => message.error(error.message),
   });
 
-  const deleteWord = useMutation({
-    mutationFn: (word: Word) => api.deleteWord(word.id),
-    onSuccess: (_result, word) => {
-      message.success(`已删除 ${word.english}`);
-      void queryClient.invalidateQueries({ queryKey: ['words', bookId] });
-      void queryClient.invalidateQueries({ queryKey: ['wordbooks'] });
-    },
-    onError: (error: Error) => message.error(error.message),
-  });
+  function openEditor(mode: 'add' | 'edit' | 'meaning', word?: Word) {
+    if (!canEdit || !currentBook) return;
+    const book = { bookId: currentBook.id, bookName: currentBook.name };
+    if (mode === 'add') setEditorTarget({ ...book, mode });
+    else if (word) setEditorTarget({ ...book, mode, word });
+    else return;
+    setEditorOpen(true);
+  }
+
+  function handleWordSaved(word: Word, targetBookId: number) {
+    queryClient.setQueryData<{ items: Word[] }>(['words', targetBookId], (data) => {
+      if (!data) return data;
+      return {
+        items: data.items.some((item) => item.id === word.id)
+          ? data.items.map((item) => (item.id === word.id ? word : item))
+          : [...data.items, word],
+      };
+    });
+    void queryClient.invalidateQueries({ queryKey: ['words', targetBookId] });
+    void queryClient.invalidateQueries({ queryKey: ['wordbooks'] });
+  }
+
+  function confirmDelete(word: Word) {
+    if (!canEdit || !currentBook || deleteWord.isPending) return;
+    const targetBookId = currentBook.id;
+    modal.confirm({
+      title: `删除单词「${word.english}」？`,
+      content: `将从「${currentBook.name}」移除这个单词及其 ${word.meanings.length} 条释义，删除后无法恢复。`,
+      okText: '确认删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: () => deleteWord.mutateAsync({ word, bookId: targetBookId }),
+    });
+  }
 
   const importWords = useMutation({
     mutationFn: (values: ImportValues) =>
@@ -152,7 +175,7 @@ export default function WordbooksPage() {
     onSuccess: (result) => {
       setImportOpen(false);
       message.success(
-        `导入完成：新增 ${result.importedCount} 条，补全 ${result.mergedCount} 条，跳过 ${result.skippedCount} 条`,
+        `导入完成：新增 ${result.imported} 条，补全 ${result.merged} 条，跳过 ${result.skipped} 条`,
       );
       void queryClient.invalidateQueries({ queryKey: ['words', bookId] });
       void queryClient.invalidateQueries({ queryKey: ['wordbooks'] });
@@ -214,29 +237,68 @@ export default function WordbooksPage() {
     columns.push({
       title: '操作',
       key: 'action',
-      width: compact ? 56 : 90,
+      width: compact ? 64 : 268,
       align: 'right',
-      render: (_value, word) => (
-        <Popconfirm
-          title="删除这个单词？"
-          description="删除后该词及全部释义都会移除，且不可恢复。"
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-          onConfirm={() => deleteWord.mutate(word)}
-        >
-          <Button
-            type="text"
-            size="small"
-            icon={<DeleteOutlined />}
-            className="row-action-danger"
-            loading={deleteWord.isPending && deleteWord.variables?.id === word.id}
-            aria-label={`删除 ${word.english}`}
+      render: (_value, word) =>
+        compact ? (
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                { key: 'edit', label: '修改单词', icon: <EditOutlined /> },
+                { key: 'meaning', label: '补充释义', icon: <FileAddOutlined /> },
+                { type: 'divider' },
+                { key: 'delete', label: '删除单词', icon: <DeleteOutlined />, danger: true },
+              ],
+              onClick: ({ key }) =>
+                key === 'delete'
+                  ? confirmDelete(word)
+                  : openEditor(key as 'edit' | 'meaning', word),
+            }}
           >
-            {compact ? null : '删除'}
-          </Button>
-        </Popconfirm>
-      ),
+            <Button
+              type="text"
+              icon={<EllipsisOutlined />}
+              aria-label={`维护 ${word.english}`}
+              disabled={deleteWord.isPending}
+            />
+          </Dropdown>
+        ) : (
+          <Space size={0} className="word-row-actions">
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => openEditor('edit', word)}
+              disabled={deleteWord.isPending}
+              aria-label={`修改 ${word.english}`}
+            >
+              修改
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              icon={<FileAddOutlined />}
+              onClick={() => openEditor('meaning', word)}
+              disabled={deleteWord.isPending}
+              aria-label={`为 ${word.english} 补充释义`}
+            >
+              补充释义
+            </Button>
+            <Button
+              type="text"
+              size="small"
+              icon={<DeleteOutlined />}
+              className="row-action-danger"
+              loading={deleteWord.isPending && deleteWord.variables?.word.id === word.id}
+              disabled={deleteWord.isPending && deleteWord.variables?.word.id !== word.id}
+              onClick={() => confirmDelete(word)}
+              aria-label={`删除 ${word.english}`}
+            >
+              删除
+            </Button>
+          </Space>
+        ),
     });
   }
 
@@ -352,7 +414,7 @@ export default function WordbooksPage() {
             <Button
               icon={<PlusOutlined />}
               disabled={!canEdit}
-              onClick={() => setAddWordOpen(true)}
+              onClick={() => openEditor('add')}
               title={canEdit ? undefined : '仅私人词库支持添加单词'}
             >
               添加单词
@@ -397,7 +459,7 @@ export default function WordbooksPage() {
             showSizeChanger: false,
             size: compact ? 'small' : undefined,
           }}
-          scroll={{ x: compact ? 300 : 600 }}
+          scroll={{ x: compact ? (canEdit ? 340 : 300) : canEdit ? 800 : 600 }}
           locale={{
             emptyText:
               books.isError || words.isError ? (
@@ -428,7 +490,7 @@ export default function WordbooksPage() {
                 >
                   {canEdit ? (
                     <Space>
-                      <Button type="primary" onClick={() => setAddWordOpen(true)}>
+                      <Button type="primary" onClick={() => openEditor('add')}>
                         添加单词
                       </Button>
                       <Button
@@ -451,7 +513,7 @@ export default function WordbooksPage() {
         type="info"
         showIcon
         title="可以做什么"
-        description="新建词库后，可以逐个添加单词、粘贴 UTF-8 TSV 批量导入，并随时删除不再需要的词；示例词库保持只读，避免影响其他人的练习。"
+        description="选择私人词库后，可以新增单词、修改英文与词性、为已有单词补充新的释义，也可以删除单词或批量导入 TSV。修改与补充都会保留已有释义；示例词库仅供浏览和练习。"
       />
 
       <Modal
@@ -490,81 +552,18 @@ export default function WordbooksPage() {
         </Form>
       </Modal>
 
-      <Modal
-        title={`添加单词${currentBook ? `：${currentBook.name}` : ''}`}
-        open={addWordOpen}
-        onCancel={() => {
-          if (!addWord.isPending) setAddWordOpen(false);
-        }}
-        cancelButtonProps={{ disabled: addWord.isPending }}
-        closable={!addWord.isPending}
-        maskClosable={!addWord.isPending}
-        keyboard={!addWord.isPending}
-        onOk={() => addWordForm.submit()}
-        okText="添加"
-        cancelText="取消"
-        confirmLoading={addWord.isPending}
-        destroyOnHidden
-      >
-        <Form<AddWordValues>
-          form={addWordForm}
-          layout="vertical"
-          preserve={false}
-          disabled={addWord.isPending}
-          onFinish={(values) => {
-            const meanings = values.meanings
-              .split('\n')
-              .map((line) => line.trim())
-              .filter(Boolean);
-            addWord.mutate({
-              english: values.english.trim(),
-              partOfSpeech: values.partOfSpeech?.trim() ?? '',
-              meanings,
-            });
-          }}
-        >
-          <Row gutter={16}>
-            <Col xs={24} sm={14}>
-              <Form.Item
-                label="英文单词"
-                name="english"
-                rules={[
-                  { required: true, whitespace: true, message: '请输入英文单词' },
-                  { pattern: /[A-Za-z]/, message: '单词至少包含一个英文字母' },
-                  { max: 100, message: '单词不超过 100 个字符' },
-                ]}
-              >
-                <Input placeholder="例如：apple" autoFocus autoComplete="off" spellCheck={false} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={10}>
-              <Form.Item
-                label="词性"
-                name="partOfSpeech"
-                rules={[{ max: 50, message: '词性不超过 50 个字符' }]}
-              >
-                <Input placeholder="例如：n.（选填）" autoComplete="off" maxLength={50} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item
-            label="中文释义"
-            name="meanings"
-            extra="每行一条释义，支持同一个单词登记多条释义。"
-            rules={[
-              { required: true, message: '请至少填写一条释义' },
-              {
-                validator: (_rule, value: string) =>
-                  value && value.split('\n').some((line) => line.trim())
-                    ? Promise.resolve()
-                    : Promise.reject(new Error('请至少填写一条释义')),
-              },
-            ]}
-          >
-            <Input.TextArea rows={3} placeholder={'例如：苹果\n苹果树'} />
-          </Form.Item>
-        </Form>
-      </Modal>
+      {editorTarget ? (
+        <WordEditorModal
+          key={`${editorTarget.bookId}:${editorTarget.mode}:${editorTarget.mode === 'add' ? 'new' : editorTarget.word.id}`}
+          target={editorTarget}
+          words={allWords}
+          open={editorOpen}
+          onClose={() => setEditorOpen(false)}
+          afterClose={() => setEditorTarget(null)}
+          onSaved={handleWordSaved}
+          onSupplement={(word) => openEditor('meaning', word)}
+        />
+      ) : null}
 
       <Modal
         title={`导入 TSV${currentBook ? `：${currentBook.name}` : ''}`}

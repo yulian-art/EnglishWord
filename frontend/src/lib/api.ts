@@ -94,9 +94,9 @@ export interface CheckinResult {
 }
 
 export interface ImportResult {
-  importedCount: number;
-  mergedCount: number;
-  skippedCount: number;
+  imported: number;
+  merged: number;
+  skipped: number;
 }
 
 export class ApiError extends Error {
@@ -187,6 +187,10 @@ export const api = {
   me: () => request<AuthResponse>('/auth/me'),
   addWord: (bookId: number, word: Omit<Word, 'id'>) =>
     request<Word>(`/wordbooks/${bookId}/words`, word),
+  updateWord: (wordId: number, word: Pick<Word, 'english' | 'partOfSpeech'>) =>
+    request<Word>(`/words/${wordId}`, word, 'PATCH'),
+  addMeaning: (wordId: number, meaning: string) =>
+    request<Word>(`/words/${wordId}/meanings`, { meaning }),
   deleteWord: (wordId: number) =>
     request<{ success: boolean }>(`/words/${wordId}`, undefined, 'DELETE'),
 };

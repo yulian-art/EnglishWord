@@ -1078,6 +1078,46 @@ body {
   line-height: 18px;
 }
 
+.word-row-actions .ant-btn {
+  padding-inline: 8px;
+}
+.word-editor-summary {
+  padding: 16px;
+  margin: 16px 0 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--brand-tint);
+}
+.word-editor-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+.word-editor-heading strong {
+  color: var(--ink);
+  font-size: 20px;
+}
+.word-editor-heading > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.word-editor-summary > .ant-typography {
+  font-size: 12px;
+}
+.word-meanings-list {
+  max-height: 180px;
+  padding-left: 22px;
+  margin: 10px 0 0;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.word-meanings-list li + li {
+  margin-top: 6px;
+}
+
 /* 行内删除默认保持低调，悬停时才提示危险操作 */
 .row-action-danger {
   color: var(--muted);
