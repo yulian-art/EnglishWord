@@ -26,7 +26,7 @@
 | PATCH /words/{id} | english、partOfSpeech 至少一个字符串字段 | 更新后的 Word |
 | DELETE /words/{id} | 无业务字段 | `{"success":true}` |
 | POST /words/{id}/meanings | `{"meaning":"书籍"}` | 补充后的 Word，重复释义不新增 |
-| POST /wordbooks/{id}/import | `{"content":"english\tpos\tmeaning\napple\tn.\t苹果","duplicatePolicy":"merge"}` | `{"importedCount":1,"mergedCount":0,"skippedCount":0}` |
+| POST /wordbooks/{id}/import | `{"content":"english\tpos\tmeaning\napple\tn.\t苹果","duplicatePolicy":"merge"}` | `{"imported":1,"merged":0,"skipped":0}` |
 
 User 为 `{id,username,createdAt}`，从不包含密码哈希。用户名是 3～32 位 ASCII 字母、数字或下划线；密码为 8～128 字节，不能包含 NUL。User.createdAt 及其他时间戳为 UTC ISO 8601 字符串，例如 `2026-11-14T10:00:00Z`。
 
@@ -36,7 +36,7 @@ Wordbook 为 `{id,name,wordCount,isDemo}`。Word 为 `{id,english,partOfSpeech,m
 
 content 是 UTF-8 TSV 字符串，不是文件上传；支持 UTF-8 BOM、LF 和 CRLF。表头必须为 `english<TAB>pos<TAB>meaning`，每条数据行恰好三列；pos 可为空，英文和释义不能为空。空白行不导入但计入物理行号。content 最多 48 KiB，最多 2000 行。
 
-duplicatePolicy 仅允许 merge 或 skip。merge 为同词补充新释义，或填充原本为空的词性，不覆盖非空词性；skip 保留已有词。计数按数据行而非最终词数：新词行计 importedCount，同词且新增信息计 mergedCount，跳过或无新增信息计 skippedCount。同一批多行同词可登记多条释义。
+duplicatePolicy 仅允许 merge 或 skip。merge 为同词补充新释义，或填充原本为空的词性，不覆盖非空词性；skip 保留已有词。计数按数据行而非最终词数：新词行计 imported，同词且新增信息计 merged，跳过或无新增信息计 skipped。同一批多行同词可登记多条释义。
 
 格式和字段错误整批拒绝，返回 400：`{"error":"导入失败","errors":[{"line":3,"message":"释义长度必须为 1..500 个 Unicode 字符。"}]}`。line 是包含表头、空行的实际输入行号。校验及数据库写入任一失败均不保留部分导入；只有事务确认提交成功才返回成功。SQL/COMMIT 故障返回 500。
 

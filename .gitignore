@@ -28,3 +28,4 @@ CMakeUserPresets.json
 Thumbs.db
 .env
 .env.*
+.workbuddy/
